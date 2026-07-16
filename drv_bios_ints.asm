@@ -776,7 +776,6 @@ int15_handler:
     jne .map_end
     
     ; Read CMOS 0x34 and 0x35 to calculate RAM size dynamically
-    pusha
     mov al, 0x35
     out 0x70, al
     in al, 0x71
@@ -789,12 +788,9 @@ int15_handler:
     shl eax, 16
     add eax, 16777216
     sub eax, 0x00100000
-    mov [cs:.ram_size_tmp], eax
-    popa
     
     mov dword [es:di], 0x00100000 ; BaseLow
     mov dword [es:di+4], 0      ; BaseHigh
-    mov eax, [cs:.ram_size_tmp]
     mov dword [es:di+8], eax    ; LengthLow
     mov dword [es:di+12], 0     ; LengthHigh
     mov dword [es:di+16], 1     ; Type (1 = Usable)
@@ -803,9 +799,6 @@ int15_handler:
     mov ecx, 20
     clc
     jmp bios_return_from_int
-
-.ram_size_tmp:
-    dd 0
 
 .map_end:
     mov ebx, 0
