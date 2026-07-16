@@ -10,7 +10,7 @@ LDFLAGS = -m elf_i386 -T linker.ld
 
 TARGET  = bios.bin
 ELF     = bios.elf
-OBJS    = boot.o bios.o
+OBJS    = boot.o bios.o drv_ata.o drv_kbd.o drv_floppy.o drv_pxe.o
 OS_BIN  = os.bin
 
 all: $(TARGET) $(OS_BIN)
@@ -29,6 +29,18 @@ boot.o: boot.asm
 	$(AS) $(ASFLAGS) $< -o $@
 
 bios.o: bios.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+drv_ata.o: drv_ata.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+drv_kbd.o: drv_kbd.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+drv_floppy.o: drv_floppy.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+drv_pxe.o: drv_pxe.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # Компиляция нашей тестовой ОС

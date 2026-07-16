@@ -1,0 +1,11 @@
+*.o
+*.bin
+*.elf
+qemu.log
+seabios/
+grub_test/
+*.img
+*.iso
+vmlinuz
+initrd.gz
+core.img
