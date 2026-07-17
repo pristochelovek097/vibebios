@@ -223,6 +223,7 @@ int16_handler:
 ; --- INT 13h (Диск) ---
 ; GRUB использует LBA-расширения для чтения диска.
 int13_handler:
+    sti     ; Разрешаем прерывания для дебаг-принтов и корректной работы таймингов QEMU
     push ax
     mov al, 'D'
     call serial_print_char
@@ -235,12 +236,16 @@ int13_handler:
     call serial_print_char
     pop ax
 
+    cmp ah, 0x00
+    je .reset_disk
     cmp ah, 0x41
     je .check_ext
     cmp ah, 0x42
     je .ext_read
     cmp ah, 0x48
     je .ext_get_params
+    cmp ah, 0x15
+    je .get_disk_type
     cmp ah, 0x02
     je .chs_read
     cmp ah, 0x08
@@ -249,6 +254,11 @@ int13_handler:
     ; Неподдерживаемая функция
     mov ah, 0x01
     stc
+    jmp bios_return_from_int
+
+.reset_disk:
+    mov ah, 0x00
+    clc
     jmp bios_return_from_int
 
 .check_ext:
@@ -265,7 +275,10 @@ int13_handler:
     jb .error_params ; Буфер слишком мал
 
     mov word [si], 26 ; Размер возвращаемых данных
-    mov word [si+2], 0x0004 ; Флаги (бит 2: LBA/Extended read supported)
+    mov word [si+2], 0x0002 ; Флаги: бит1=CHS valid (НЕ removable!)
+    mov dword [si+4], 260   ; Cylinders
+    mov dword [si+8], 16    ; Heads
+    mov dword [si+12], 63   ; Sectors per track
     mov dword [si+16], 0x00400000 ; Total sectors (Low 32-bit): 4,194,304 = 2GB
     mov dword [si+20], 0 ; Total sectors (High 32-bit)
     mov word [si+24], 512 ; Bytes per sector
@@ -304,15 +317,19 @@ int13_handler:
     ; Сохраняем все 32-битные регистры! GRUB полагается на них.
     pushad
     
+    ; Сохраняем оригинальный номер диска (DL)
+    mov [cs:(.tmp_ext_drive - payload_start)], dl
+    
     ; Setup variables
     mov ebx, 0
     mov bx, [si+2] ; Total Remaining Sectors
     
     mov eax, [si+8] ; LBA Low
     
-    mov edx, 0
-    mov dx, [si+6]
-    mov es, dx ; Buffer segment
+    push cx
+    mov cx, [si+6]
+    mov es, cx ; Buffer segment
+    pop cx
     
     mov edi, 0
     mov di, [si+4] ; Buffer offset
@@ -342,16 +359,23 @@ int13_handler:
     pop ax
 
     ; Wait for BSY=0 before selecting drive
+    push eax   ; ЗАЩИЩАЕМ EAX (LBA)
     push edi
-    mov edi, 0x000FFFFF
+    mov edi, 0x00FFFFFF
 .wait_bsy1:
     dec edi
-    jz .read_timeout_err
+    jz .err_bsy1_timeout
     mov dx, 0x1F7
     in al, dx
     test al, 0x80 ; BSY
     jnz .wait_bsy1
     pop edi
+    pop eax    ; ВОССТАНАВЛИВАЕМ EAX (LBA)
+
+    push ax
+    mov al, 'B'
+    call serial_print_char
+    pop ax
 
     ; Select Drive and send high bits of LBA (0x1F6)
     mov dx, 0x1F6
@@ -361,17 +385,7 @@ int13_handler:
     shr eax, cl
     and al, 0x0F
     
-    ; DL is the original drive number, passed in DL to int13_handler.
-    ; But we overwrote DL at the start of .ext_read!
-    ; We need to save the original DL! Let's get it from [si+2] NO, that's sector count.
-    ; GRUB passes drive in DL! Let's read it from the stack!
-    ; pushad pushes: EAX, ECX, EDX, EBX, ESP, EBP, ESI, EDI
-    ; So EDX is at SP + 20
-    push bp
-    mov bp, sp
-    mov cl, [bp+20] ; Original DL
-    pop bp
-    
+    mov cl, [cs:(.tmp_ext_drive - payload_start)]
     and cl, 1
     shl cl, 4
     or al, 0xE0
@@ -381,11 +395,12 @@ int13_handler:
     pop eax
 
     ; Wait for BSY=0 and RDY=1 after selecting drive
+    push eax   ; ЗАЩИЩАЕМ EAX (LBA)
     push edi
-    mov edi, 0x000FFFFF
+    mov edi, 0x00FFFFFF
 .wait_rdy1:
     dec edi
-    jz .read_timeout_err
+    jz .err_rdy1_timeout
     mov dx, 0x1F7
     in al, dx
     test al, 0x80 ; BSY
@@ -393,6 +408,12 @@ int13_handler:
     test al, 0x40 ; RDY
     jz .wait_rdy1
     pop edi
+    pop eax    ; ВОССТАНАВЛИВАЕМ EAX (LBA)
+
+    push ax
+    mov al, 'Y'
+    call serial_print_char
+    pop ax
 
     ; Send Sector Count (CX)
     mov dx, 0x1F2
@@ -438,25 +459,27 @@ int13_handler:
 .read_sector_loop:
     ; Wait for DRQ
     mov dx, 0x3F6
+    push eax  ; ЗАЩИЩАЕМ EAX (LBA)
     in al, dx
     in al, dx
     in al, dx
     in al, dx
 
     push edi
-    mov edi, 0x000FFFFF
+    mov edi, 0x00FFFFFF
 .wait_drq:
     dec edi
-    jz .read_timeout_err
+    jz .err_drq_timeout
     mov dx, 0x1F7
     in al, dx
     test al, 0x80 ; BSY
     jnz .wait_drq
     test al, 0x01 ; ERR
-    jnz .read_error_err
+    jnz .err_drq_err
     test al, 0x08 ; DRQ
     jz .wait_drq
     pop edi
+    pop eax  ; ВОССТАНАВЛИВАЕМ EAX (LBA)
 
     ; Read 1 sector (256 words)
     cld
@@ -467,6 +490,11 @@ int13_handler:
     rep insw
     pop edi ; Восстанавливаем DI
     pop ecx
+
+    push ax
+    mov al, '.'
+    call serial_print_char
+    pop ax
 
     ; Advance Buffer (ES only, DI stays original)
     push ax
@@ -487,16 +515,35 @@ int13_handler:
 
     jmp .read_chunk_loop
 
-.read_timeout_err:
+.err_bsy1_timeout:
     pop edi
+    pop eax
     jmp .read_error
-.read_error_err:
+
+.err_rdy1_timeout:
     pop edi
+    pop eax
+    jmp .read_error
+
+.err_drq_timeout:
+    pop edi
+    pop eax
+    pop ecx
+    jmp .read_error
+
+.err_drq_err:
+    pop edi
+    pop eax
+    pop ecx
+    jmp .read_error
+
 .read_error:
     popad
     mov ah, 0x80
     stc
     jmp bios_return_from_int
+
+.tmp_ext_drive: db 0
 
 .read_done:
     popad
@@ -789,12 +836,12 @@ int15_handler:
     shl eax, 16
     add eax, 16777216
     sub eax, 0x00100000
-    mov [cs:.ram_size_tmp], eax
+    mov [cs:(.ram_size_tmp - payload_start)], eax
     popa
     
     mov dword [es:di], 0x00100000 ; BaseLow
     mov dword [es:di+4], 0      ; BaseHigh
-    mov eax, [cs:.ram_size_tmp]
+    mov eax, [cs:(.ram_size_tmp - payload_start)]
     mov dword [es:di+8], eax    ; LengthLow
     mov dword [es:di+12], 0     ; LengthHigh
     mov dword [es:di+16], 1     ; Type (1 = Usable)

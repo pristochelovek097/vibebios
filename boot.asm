@@ -150,7 +150,7 @@ payload_start:
     mov word [0x0404], 0x0000 ; COM3
     mov word [0x0406], 0x0000 ; COM4
     mov word [0x0410], 0x0221 ; 1 COM port, 1 FPU
-    mov word [0x0413], 640    ; Base Memory (KB)
+    mov word [0x0413], 632    ; Base Memory (KB)
     mov byte [0x0475], 1      ; Number of HDDs
 
     ; Полная инициализация контроллеров прерываний PIC (Master & Slave)
