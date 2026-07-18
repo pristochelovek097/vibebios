@@ -267,25 +267,25 @@ void rtc_write(u8 index, u8 val) {
 
 void save_cmos_settings() {
     u8 b1 = (ide_en & 1) | ((acpi_en & 1) << 1) | ((usb_en & 1) << 2);
-    rtc_write(0x40, b1);
+    rtc_write(0x30, b1);
     
     u8 font_idx = 0;
     if(current_font == font_fixedsys8x16) font_idx = 1;
     if(current_font == font_sun8x16) font_idx = 2;
-    rtc_write(0x41, font_idx);
+    rtc_write(0x31, font_idx);
     
-    rtc_write(0x3F, 0xAA);
+    rtc_write(0x32, 0xAA);
 }
 
 void load_cmos_settings() {
-    u8 magic = rtc_read(0x3F);
+    u8 magic = rtc_read(0x32);
     if(magic == 0xAA) {
-        u8 b1 = rtc_read(0x40);
+        u8 b1 = rtc_read(0x30);
         ide_en = b1 & 1;
         acpi_en = (b1 >> 1) & 1;
         usb_en = (b1 >> 2) & 1;
         
-        u8 font_idx = rtc_read(0x41);
+        u8 font_idx = rtc_read(0x31);
         if(font_idx == 0) current_font = font_ibm8x16;
         if(font_idx == 1) current_font = font_fixedsys8x16;
         if(font_idx == 2) current_font = font_sun8x16;
@@ -420,16 +420,59 @@ redraw_popup:
 
 #include "logo_data.h"
 
-static void draw_logo(int x, int y) {
-    for(int row = 0; row < 128; row++) {
-        for(int col = 0; col < 128; col++) {
-            u32 color = logo_data[row * 128 + col];
-            // Simple alpha blend check if we want, but it's ARGB so we can just draw
-            if((color >> 24) > 128) {
-                put_pixel(x + col, y + row, color);
+static void draw_logo_faded(int x, int y, u32 brightness) {
+    for(int row = 0; row < LOGO_HEIGHT; row++) {
+        for(int col = 0; col < LOGO_WIDTH; col++) {
+            u32 color = logo_data[row * LOGO_WIDTH + col];
+            u32 a = (color >> 24) & 0xFF;
+            if(a > 128) {
+                u32 r = (color >> 16) & 0xFF;
+                u32 g = (color >> 8) & 0xFF;
+                u32 b = color & 0xFF;
+                r = (r * brightness) / 255;
+                g = (g * brightness) / 255;
+                b = (b * brightness) / 255;
+                put_pixel(x + col, y + row, 0xFF000000 | (r << 16) | (g << 8) | b);
             }
         }
     }
+}
+
+struct Note { u32 freq; u32 dur; };
+static void play_melody_and_fade_logo() {
+    struct Note melody[] = {
+        {659, 10000000}, {587, 10000000}, {370, 20000000}, {415, 20000000},
+        {554, 10000000}, {493, 10000000}, {293, 20000000}, {329, 20000000},
+        {493, 10000000}, {440, 10000000}, {277, 20000000}, {329, 20000000},
+        {440, 40000000}
+    };
+    
+    u32 current_frame = 0;
+    u32 total_frames = 352; // 13 notes * ~16-64 frames each
+
+    for (int i = 0; i < 13; i++) {
+        u32 div = 1193180 / melody[i].freq;
+        outb(0x43, 0xB6);
+        outb(0x42, (u8)(div & 0xFF));
+        outb(0x42, (u8)(div >> 8));
+        u8 tmp = inb(0x61);
+        if (tmp != (tmp | 3)) outb(0x61, tmp | 3);
+        
+        u32 frames = melody[i].dur / 600000; 
+        if (frames == 0) frames = 1;
+        
+        for (u32 f = 0; f < frames; f++) {
+            u32 brightness = (current_frame * 255) / total_frames;
+            if (brightness > 255) brightness = 255;
+            
+            draw_logo_faded((800 - LOGO_WIDTH) / 2, (600 - LOGO_HEIGHT) / 2 - 50, brightness);
+            current_frame++;
+            
+            // Добавляем задержку, чтобы ноты играли с правильной скоростью!
+            for(volatile u32 wait=0; wait<400000; wait++);
+        }
+    }
+    nosound();
 }
 
 static const char* get_pci_device_name(u16 vendor, u16 device) {
@@ -457,21 +500,17 @@ void bios_main() {
     init_acpi();
     load_cmos_settings();
 
-    // ICE TEA / Insyde funny melody
-    beep(659, 10000000); beep(587, 10000000); beep(370, 20000000); beep(415, 20000000);
-    beep(554, 10000000); beep(493, 10000000); beep(293, 20000000); beep(329, 20000000);
-    beep(493, 10000000); beep(440, 10000000); beep(277, 20000000); beep(329, 20000000);
-    beep(440, 40000000);
-
-    fill_rect(0, 0, SCREEN_W, SCREEN_H, 0xFF0000AA);
+    // Start with black screen
+    fill_rect(0, 0, 800, 600, 0xFF000000);
     
+    // Play melody while fading in the logo
+    play_melody_and_fade_logo();
+
+    // After fade, draw the rest of the POST screen
     fill_rect(0, 0, SCREEN_W, 4, 0xFF00FFFF);        
     fill_rect(0, SCREEN_H-4, SCREEN_W, 4, 0xFFFF00FF); 
     fill_rect(0, 0, 4, SCREEN_H, 0xFF00FFFF);        
     fill_rect(SCREEN_W-4, 0, 4, SCREEN_H, 0xFFFF00FF); 
-    
-    draw_string(332, 174, "VIBEBIOS", 0xFF000000);  
-    draw_string(328, 170, "VIBEBIOS", 0xFF00FFFF); 
     
     draw_string(280, 250, "PIZDEC COOL VIBEBIOS", 0xFFFFFF00);
     draw_string(312, 330, "32-BIT HUINYA MODE", 0xFF00FF00);
@@ -505,8 +544,8 @@ main_loop:
 
     fill_rect(0, 0, 800, 600, 0xFF000000);
     
-    // Draw graphical splash logo in center
-    draw_logo((800 - 128) / 2, (600 - 128) / 2 - 50);
+    // Draw fully bright logo
+    draw_logo_faded((800 - LOGO_WIDTH) / 2, (600 - LOGO_HEIGHT) / 2 - 50, 255);
     
     draw_string(0, 0, "VibeBIOS", 0xFFFFFFFF);
     draw_string(0, 16, "Copyright (c) 2026, Huinya Software Corp.", 0xFFFFFFFF);
@@ -532,6 +571,11 @@ main_loop:
     // removed local statics
 
     if(show_setup) {
+        int backup_ide = ide_en;
+        int backup_acpi = acpi_en;
+        int backup_usb = usb_en;
+        const u8* backup_font = current_font;
+        
         int current_tab = 0; // 0=Main, 1=Advanced, 2=Boot, 3=Exit
         int selected_item = 0;
         
@@ -819,7 +863,13 @@ process_key:
                     
                     if(dkey == 0x4D || dkey == 0x4B) dlg_sel ^= 1;
                     if(dkey == 0x1C) {
-                        if(dlg_sel == 0) goto main_loop;
+                        if(dlg_sel == 0) {
+                            ide_en = backup_ide;
+                            acpi_en = backup_acpi;
+                            usb_en = backup_usb;
+                            current_font = backup_font;
+                            goto main_loop;
+                        }
                         else goto redraw_setup;
                     }
                     if(dkey == 0x01) goto redraw_setup;
