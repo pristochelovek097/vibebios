@@ -4,20 +4,20 @@ LD      = ld
 OBJCOPY = objcopy
 QEMU    = qemu-system-i386
 
-CFLAGS  = -m32 -ffreestanding -fno-pie -fno-stack-protector -fno-delete-null-pointer-checks -Os -Wall -Wextra
+CFLAGS  = -m32 -ffreestanding -fno-pie -fno-stack-protector -fno-delete-null-pointer-checks -mno-sse -mno-sse2 -mno-mmx -Os -Wall -Wextra
 ASFLAGS = -f elf32
 LDFLAGS = -m elf_i386 -T linker.ld
 
 TARGET  = bios.bin
 ELF     = bios.elf
-OBJS    = boot.o bios.o drv_ata.o drv_kbd.o drv_floppy.o drv_pxe.o
+OBJS    = boot.o bios.o drv_ata.o drv_kbd.o drv_floppy.o drv_pxe.o drv_pci.o smbios.o acpi.o
 OS_BIN  = os.bin
 
 all: $(TARGET) $(OS_BIN)
 
 run: $(TARGET) $(OS_BIN)
 	@echo ">> Запуск WILIXBIOS в QEMU..."
-	$(QEMU) -m 32M -vga std -bios $(TARGET) -d int,cpu_reset -no-reboot -no-shutdown -drive file=$(OS_BIN),format=raw,index=0,media=disk -D qemu.log
+	$(QEMU) -m 32M -vga std -bios $(TARGET) -d int,cpu_reset -drive file=$(OS_BIN),format=raw,index=0,media=disk -D qemu.log
 
 $(TARGET): $(ELF)
 	$(OBJCOPY) -O binary $< $@
@@ -52,3 +52,8 @@ clean:
 	rm -f *.o $(ELF) $(TARGET) $(OS_BIN)
 
 .PHONY: all run clean
+smbios.o: smbios.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+acpi.o: acpi.c
+	$(CC) $(CFLAGS) -c $< -o $@
