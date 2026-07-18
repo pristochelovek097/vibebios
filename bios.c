@@ -513,7 +513,7 @@ main_loop:
     draw_string(0, 32, "Warning: This BIOS contains huinya.", 0xFFFF0000);
     draw_string(0, 64, uuid_msg, 0xFFFFFFFF);
     
-    draw_string(0, 560, "Press <ESC> for Boot Menu, <F2> for Insyde Setup", 0xFFFFFFFF);
+    draw_string(0, 560, "Press <ESC> for Boot Menu, <F2> for VibeBIOS Setup", 0xFFFFFFFF);
 
     for(volatile u32 i = 0; i < 80000000; i++) {
         u8 scancode = kbd_read_scancode();
