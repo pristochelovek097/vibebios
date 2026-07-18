@@ -9,10 +9,27 @@ SECTIONS
     
     .text : { *(.text) }
     .rodata : { *(.rodata*) }
-    .data : { *(.data) }
-    .bss : { *(.bss) *(COMMON) }
+    
+    _data_start_rom = .;
+
+    /* RAM Section */
+    . = 0x00010000;
+    _data_start_ram = .;
+    .data : AT(_data_start_rom) { *(.data) }
+    _data_end_ram = .;
+    
+    .bss : { 
+        _bss_start = .;
+        *(.bss) *(COMMON) 
+        _bss_end = .;
+    }
 
     /* Бутблок - последние 256 байт */
     . = 0xFFFFFF00;
-    .boot : { *(.boot) }
+    .boot : AT(0xFFFFFF00) { *(.boot) }
+    
+    /DISCARD/ : {
+        *(.eh_frame)
+        *(.comment)
+    }
 }

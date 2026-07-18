@@ -1,4 +1,9 @@
 extern bios_main
+extern _data_start_rom
+extern _data_start_ram
+extern _data_end_ram
+extern _bss_start
+extern _bss_end
 
 ; === 32-БИТНОЕ ЯДРО (0xFFFE0000) ===
 section .text
@@ -11,6 +16,21 @@ start32:
     mov gs, ax
     mov ss, ax
     mov esp, 0x90000
+
+    ; --- C RUNTIME INIT ---
+    ; Copy .data from ROM to RAM
+    mov esi, _data_start_rom
+    mov edi, _data_start_ram
+    mov ecx, _data_end_ram
+    sub ecx, _data_start_ram
+    rep movsb
+    
+    ; Zero .bss
+    mov edi, _bss_start
+    mov ecx, _bss_end
+    sub ecx, _bss_start
+    xor al, al
+    rep stosb
 
     call bios_main
 
@@ -89,6 +109,37 @@ payload_start:
     in al, 0x92
     or al, 2
     out 0x92, al
+
+    ; Отключаем AUX (Мышь) порт, чтобы случайные движения не забили буфер 8042
+.wait_disable_aux:
+    in al, 0x64
+    test al, 2
+    jnz .wait_disable_aux
+    mov al, 0xA7 ; Disable Mouse Port
+    out 0x64, al
+    
+    ; Очищаем буфер PS/2 (вычитываем весь мусор)
+.flush_ps2:
+    in al, 0x64
+    test al, 1
+    jz .ps2_flushed
+    in al, 0x60
+    jmp .flush_ps2
+.ps2_flushed:
+
+    ; Инициализация 8042 PS/2 контроллера (Включаем IRQ1 и трансляцию в Set 1)
+.wait_8042_1:
+    in al, 0x64
+    test al, 2
+    jnz .wait_8042_1
+    mov al, 0x60 ; Команда записи Command Byte
+    out 0x64, al
+.wait_8042_2:
+    in al, 0x64
+    test al, 2
+    jnz .wait_8042_2
+    mov al, 0x47 ; IRQ1=1, SysFlag=1, Translate=1 (AUX IRQ=0)
+    out 0x60, al
 
     ; Инициализация PIT (Таймер) 18.2 Hz
     mov al, 0x36 ; Channel 0, LSB/MSB, Mode 3, Binary
@@ -190,11 +241,41 @@ payload_start:
 
 .pxe_boot:
     ; Init PXE ROM at 0xC8000
+    push ds
     mov ax, 0xC800
     mov ds, ax
     cmp word [0], 0xAA55
+    pop ds
     jne .no_pxe
+
+    ; Setup registers for PCI Option ROM Init
+    mov ax, [0x0502] ; AX = PCI BDF (Bus/Dev/Func)
+    xor di, di
+    mov es, di       ; ES:DI = 0000:0000 (No PnP)
+    
+    ; CALL FAR C800:0003
     call 0xC800:0003
+
+    ; Now execute BEV (Bootstrap Entry Vector) if present
+    mov ax, 0xC800
+    mov ds, ax
+    mov bx, [0x001A] ; PnP Header offset
+    cmp bx, 0
+    je .no_pxe
+    
+    cmp dword [bx], 0x506E5024 ; '$PnP'
+    jne .no_pxe
+    
+    mov cx, [bx + 0x1A] ; BEV offset
+    cmp cx, 0
+    je .no_pxe
+    
+    ; We have a BEV! Far jump to it (BEV should not return, it boots)
+    ; We push the segment and offset, then retf
+    push ax
+    push cx
+    retf
+
 .no_pxe:
     xor ax, ax
     mov ds, ax
