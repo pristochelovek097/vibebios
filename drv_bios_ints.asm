@@ -93,11 +93,32 @@ int09_handler:
     
     in al, 0x60
     
+    ; Check for E0 prefix
+    cmp al, 0xE0
+    jne .not_e0
+    mov byte [cs:.e0_flag - payload_start], 1
+    jmp .done
+.not_e0:
+    
     ; Check if key release
     test al, 0x80
-    jnz .done
-    ; Convert Scancode (AL) to ASCII (AH)
+    jnz .key_release
+    
+    ; It's a make code. 
     mov ah, 0
+    
+    ; Was it an extended key?
+    cmp byte [cs:.e0_flag - payload_start], 1
+    jne .normal_key
+    mov byte [cs:.e0_flag - payload_start], 0
+    ; For extended keys, BIOS returns AH=Scancode, AL=0xE0 (or 0x00)
+    mov ah, al ; Scancode in AH
+    mov al, 0xE0 ; Extended ASCII code
+    jmp .push_direct
+
+.normal_key:
+    cmp al, 0x3C ; F2 scancode
+    je .push_buf
     cmp al, 0x39
     ja .push_buf
     push bx
@@ -106,6 +127,16 @@ int09_handler:
     mov ah, [cs:(.scancode_to_ascii - payload_start) + bx]
     pop bx
     jmp .push_buf
+
+.key_release:
+    mov byte [cs:.e0_flag - payload_start], 0
+    jmp .done
+
+.e0_flag: db 0
+
+.push_direct:
+    ; Jump directly to pushing AX, without xchg ah, al
+    jmp .push_buf_skip_xchg
 
 .scancode_to_ascii:
     db 0, 27, '1','2','3','4','5','6','7','8','9','0','-','=',8, 9
@@ -117,6 +148,7 @@ int09_handler:
     ; AX = [ASCII, Scancode]. BIOS expects AH=Scancode, AL=ASCII.
     xchg ah, al ; Now AH=Scancode, AL=ASCII
 
+.push_buf_skip_xchg:
     ; Push AX to circular buffer at Tail
     mov bx, [0x041C] ; Tail pointer
     mov di, bx
@@ -748,6 +780,8 @@ global int1A_handler
 int1A_handler:
     cmp ah, 0x00
     je .get_time
+    cmp ah, 0xB1
+    je .pci_bios
     
     stc
     jmp bios_return_from_int
@@ -762,6 +796,196 @@ int1A_handler:
     pop ds
     pop bx
     mov al, 0
+    clc
+    jmp bios_return_from_int
+
+.pci_bios:
+    cmp al, 0x01
+    je .pci_install_check
+    cmp al, 0x08
+    je .pci_read_byte
+    cmp al, 0x09
+    je .pci_read_word
+    cmp al, 0x0A
+    je .pci_read_dword
+    cmp al, 0x0B
+    je .pci_write_byte
+    cmp al, 0x0C
+    je .pci_write_word
+    cmp al, 0x0D
+    je .pci_write_dword
+    
+    ; Unsupported
+    mov ah, 0x81
+    stc
+    jmp bios_return_from_int
+
+.pci_install_check:
+    mov ah, 0x00
+    mov al, 0x01
+    mov edx, 0x20494350 ; 'ICP '
+    mov bx, 0x0210
+    mov cx, 0x0001
+    clc
+    jmp bios_return_from_int
+
+.pci_read_byte:
+    push dx
+    push eax
+    movzx eax, bh
+    shl eax, 16
+    movzx edx, bl
+    shl edx, 8
+    or eax, edx
+    movzx edx, di
+    and edx, 0xFC
+    or eax, edx
+    or eax, 0x80000000
+    
+    mov dx, 0xCF8
+    out dx, eax
+    mov dx, 0xCFC
+    mov cx, di
+    and cx, 3
+    add dx, cx
+    in al, dx
+    mov cl, al
+    pop eax
+    pop dx
+    mov ah, 0
+    clc
+    jmp bios_return_from_int
+
+.pci_read_word:
+    push dx
+    push eax
+    movzx eax, bh
+    shl eax, 16
+    movzx edx, bl
+    shl edx, 8
+    or eax, edx
+    movzx edx, di
+    and edx, 0xFC
+    or eax, edx
+    or eax, 0x80000000
+    
+    mov dx, 0xCF8
+    out dx, eax
+    mov dx, 0xCFC
+    mov cx, di
+    and cx, 2
+    add dx, cx
+    in ax, dx
+    mov cx, ax
+    pop eax
+    pop dx
+    mov ah, 0
+    clc
+    jmp bios_return_from_int
+
+.pci_read_dword:
+    push dx
+    push eax
+    movzx eax, bh
+    shl eax, 16
+    movzx edx, bl
+    shl edx, 8
+    or eax, edx
+    movzx edx, di
+    and edx, 0xFC
+    or eax, edx
+    or eax, 0x80000000
+    
+    mov dx, 0xCF8
+    out dx, eax
+    mov dx, 0xCFC
+    in eax, dx
+    mov ecx, eax
+    pop eax
+    pop dx
+    mov ah, 0
+    clc
+    jmp bios_return_from_int
+
+.pci_write_byte:
+    push dx
+    push eax
+    movzx eax, bh
+    shl eax, 16
+    movzx edx, bl
+    shl edx, 8
+    or eax, edx
+    movzx edx, di
+    and edx, 0xFC
+    or eax, edx
+    or eax, 0x80000000
+    
+    mov dx, 0xCF8
+    out dx, eax
+    mov dx, 0xCFC
+    push cx
+    mov cx, di
+    and cx, 3
+    add dx, cx
+    pop cx
+    mov al, cl
+    out dx, al
+    pop eax
+    pop dx
+    mov ah, 0
+    clc
+    jmp bios_return_from_int
+
+.pci_write_word:
+    push dx
+    push eax
+    movzx eax, bh
+    shl eax, 16
+    movzx edx, bl
+    shl edx, 8
+    or eax, edx
+    movzx edx, di
+    and edx, 0xFC
+    or eax, edx
+    or eax, 0x80000000
+    
+    mov dx, 0xCF8
+    out dx, eax
+    mov dx, 0xCFC
+    push cx
+    mov cx, di
+    and cx, 2
+    add dx, cx
+    pop cx
+    mov ax, cx
+    out dx, ax
+    pop eax
+    pop dx
+    mov ah, 0
+    clc
+    jmp bios_return_from_int
+
+.pci_write_dword:
+    push dx
+    push eax
+    movzx eax, bh
+    shl eax, 16
+    movzx edx, bl
+    shl edx, 8
+    or eax, edx
+    movzx edx, di
+    and edx, 0xFC
+    or eax, edx
+    or eax, 0x80000000
+    
+    mov dx, 0xCF8
+    out dx, eax
+    mov dx, 0xCFC
+    mov eax, ecx
+    out dx, eax
+    pop eax
+    pop dx
+    mov ah, 0
     clc
     jmp bios_return_from_int
 

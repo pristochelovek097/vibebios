@@ -28,7 +28,9 @@ int pxe_is_ready() {
 }
 
 int pxe_boot() {
-    if (net_bus == -1) return 0;
+    if (net_bus == -1) {
+        if (!pxe_is_ready()) return 0;
+    }
 
     // Enable memory space
     u32 cmd_addr = 0x80000000 | (net_bus << 16) | (net_dev << 11) | (net_func << 8) | 0x04;
@@ -61,6 +63,9 @@ int pxe_boot() {
     outl(0xCFC, orig_cmd);
     outl(0xCF8, pci_addr);
     outl(0xCFC, orig_bar);
+
+    // Write BDF to 0x0502 for boot.asm
+    *(volatile u16*)0x0502 = (net_bus << 8) | (net_dev << 3) | net_func;
 
     return 1;
 }
