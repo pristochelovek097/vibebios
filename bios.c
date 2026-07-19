@@ -438,6 +438,10 @@ static void draw_logo_faded(int x, int y, u32 brightness) {
     }
 }
 
+static inline void post(u8 code) {
+    outb(0x80, code);
+}
+
 struct Note { u32 freq; u32 dur; };
 static void play_melody_and_fade_logo() {
     struct Note melody[] = {
@@ -451,6 +455,7 @@ static void play_melody_and_fade_logo() {
     u32 total_frames = 352; // 13 notes * ~16-64 frames each
 
     for (int i = 0; i < 13; i++) {
+        post(0x10 + i); // Вывод POST-кода во время игры ноты
         u32 div = 1193180 / melody[i].freq;
         outb(0x43, 0xB6);
         outb(0x42, (u8)(div & 0xFF));
