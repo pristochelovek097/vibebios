@@ -494,6 +494,90 @@ static const char* get_pci_device_name(u16 vendor, u16 device) {
 extern void init_smbios();
 extern void init_acpi();
 
+static inline void cpuid(u32 leaf, u32 *eax, u32 *ebx, u32 *ecx, u32 *edx) {
+    __asm__ __volatile__("cpuid" : "=a" (*eax), "=b" (*ebx), "=c" (*ecx), "=d" (*edx) : "0" (leaf));
+}
+
+static void get_cpu_name(char *name) {
+    u32 eax, ebx, ecx, edx;
+    u32 *ptr = (u32*)name;
+    cpuid(0x80000000, &eax, &ebx, &ecx, &edx);
+    if (eax < 0x80000004) {
+        name[0] = 'U'; name[1] = 'n'; name[2] = 'k'; name[3] = 'n'; name[4] = 'o'; name[5] = 'w'; name[6] = 'n'; name[7] = 0;
+        return;
+    }
+    cpuid(0x80000002, &ptr[0], &ptr[1], &ptr[2], &ptr[3]);
+    cpuid(0x80000003, &ptr[4], &ptr[5], &ptr[6], &ptr[7]);
+    cpuid(0x80000004, &ptr[8], &ptr[9], &ptr[10], &ptr[11]);
+    name[48] = 0;
+    int i = 0, j = 0;
+    while (name[i] == ' ') i++;
+    while (name[i]) {
+        name[j++] = name[i++];
+    }
+    name[j] = 0;
+}
+
+static u32 get_ram_kb() {
+    u32 ext_kb = rtc_read(0x30) | (rtc_read(0x31) << 8);
+    u32 ext_64kb = rtc_read(0x34) | (rtc_read(0x35) << 8);
+    if (ext_64kb) return 16384 + ext_64kb * 64;
+    return 1024 + ext_kb;
+}
+
+static void u32_to_str(u32 val, char* out) {
+    if (val == 0) {
+        out[0] = '0';
+        out[1] = 0;
+        return;
+    }
+    char buf[12];
+    int p = 0;
+    while(val > 0) {
+        buf[p++] = '0' + (val % 10);
+        val /= 10;
+    }
+    int out_p = 0;
+    for(int i = p - 1; i >= 0; i--) {
+        out[out_p++] = buf[i];
+    }
+    out[out_p] = 0;
+}
+
+static void ata_identify(u8 drive, char* model) {
+    outb(0x1F6, 0xA0 | (drive << 4));
+    for(volatile int i=0; i<400; i++);
+    outb(0x1F2, 0); outb(0x1F3, 0); outb(0x1F4, 0); outb(0x1F5, 0);
+    outb(0x1F7, 0xEC);
+    
+    u8 status = inb(0x1F7);
+    if (status == 0) { model[0] = 0; return; }
+    while (inb(0x1F7) & 0x80);
+    
+    u8 mid = inb(0x1F4);
+    u8 high = inb(0x1F5);
+    if (mid == 0x14 && high == 0xEB) {
+        outb(0x1F7, 0xA1);
+        while (inb(0x1F7) & 0x80);
+    }
+    
+    status = inb(0x1F7);
+    if (status & 0x01) { model[0] = 0; return; }
+    
+    while (!(inb(0x1F7) & 0x08));
+    
+    u16 data[256];
+    for(int i = 0; i < 256; i++) data[i] = inw(0x1F0);
+    
+    int p = 0;
+    for(int i = 27; i < 47; i++) {
+        model[p++] = (char)(data[i] >> 8);
+        model[p++] = (char)(data[i] & 0xFF);
+    }
+    model[p] = 0;
+    while(p > 0 && model[p-1] == ' ') { model[p-1] = 0; p--; }
+}
+
 // --- ГЛАВНАЯ ФУНКЦИЯ ---
 void bios_main() {
     nosound();
@@ -543,19 +627,71 @@ void bios_main() {
 main_loop:
     show_menu = 0;
     show_setup = 0;
-    // Draw initial POST screen (Insyde/SeaBIOS Style)
+    // Draw initial POST screen
     char uuid_msg[60] = "Machine UUID ";
     get_qemu_uuid_str(uuid_msg + 13);
 
+    char cpu_name[50];
+    get_cpu_name(cpu_name);
+    
+    char ide0[50];
+    char ide1[50];
+    ata_identify(0, ide0);
+    ata_identify(1, ide1);
+    
+    char ram_str[20];
+    u32_to_str(get_ram_kb(), ram_str);
+    int p = 0; while(ram_str[p]) p++;
+    ram_str[p++] = 'K'; ram_str[p++] = 'B'; ram_str[p++] = ' ';
+    ram_str[p++] = 'O'; ram_str[p++] = 'K'; ram_str[p] = 0;
+
     fill_rect(0, 0, 800, 600, 0xFF000000);
     
-    // Draw fully bright logo
-    draw_logo_faded((800 - LOGO_WIDTH) / 2, (600 - LOGO_HEIGHT) / 2 - 50, 255);
+    int logo_x = (800 - LOGO_WIDTH) / 2;
+    int logo_y = (600 - LOGO_HEIGHT) / 2 - 50;
     
-    draw_string(0, 0, "VibeBIOS", 0xFFFFFFFF);
-    draw_string(0, 16, "Copyright (c) 2026, Huinya Software Corp.", 0xFFFFFFFF);
-    draw_string(0, 32, "Warning: This BIOS contains huinya.", 0xFFFF0000);
-    draw_string(0, 64, uuid_msg, 0xFFFFFFFF);
+    // Draw fully bright logo
+    draw_logo_faded(logo_x, logo_y, 255);
+    
+    int ascii_y = logo_y + LOGO_HEIGHT + 20;
+    int ascii_x = (800 - 47 * 8) / 2;
+    
+    draw_string(ascii_x, ascii_y,      "  __     _____ ____  _____ ____ ___ ___  ____  ", 0xFF00FFFF);
+    draw_string(ascii_x, ascii_y + 16, " \\ \\   / /_ _| __ )| ____| __ )_ _/ _ \\/ ___| ", 0xFFFF00FF);
+    draw_string(ascii_x, ascii_y + 32, "  \\ \\ / / | ||  _ \\|  _| |  _ \\| | | | \\___ \\ ", 0xFFFFFF00);
+    draw_string(ascii_x, ascii_y + 48, "   \\ V /  | || |_) | |___| |_) | | |_| |___) |", 0xFF00FFFF);
+    draw_string(ascii_x, ascii_y + 64, "    \\_/  |___|____/|_____|____/___\\___/|____/", 0xFFFF00FF);
+    
+    // AMIBIOS style logs at the top-left
+    int log_y = 0;
+    draw_string(0, log_y, "VIBEBIOS(C) 2026 Huinya Software Corp.", 0xFFFFFFFF); log_y += 16;
+    draw_string(0, log_y, "VibeBIOS ACPI BIOS Revision 3.1", 0xFFFFFFFF); log_y += 16;
+    draw_string(0, log_y, "Warning: This BIOS contains huinya.", 0xFFFF0000); log_y += 32;
+    
+    char cpu_log[80] = "CPU : ";
+    int p_c = 6, c_i = 0;
+    while(cpu_name[c_i]) { cpu_log[p_c++] = cpu_name[c_i++]; }
+    cpu_log[p_c] = 0;
+    draw_string(0, log_y, cpu_log, 0xFFFFFFFF); log_y += 32;
+    
+    draw_string(0, log_y, ram_str, 0xFFFFFFFF); log_y += 32;
+    
+    char pm_log[80] = "Auto-Detecting Pri Master.. ";
+    int pm_i = 0, pm_j = 28;
+    if (ide0[0]) { while(ide0[pm_i]) pm_log[pm_j++] = ide0[pm_i++]; } 
+    else { const char* nd = "Not Detected"; while(nd[pm_i]) pm_log[pm_j++] = nd[pm_i++]; }
+    pm_log[pm_j] = 0;
+
+    char ps_log[80] = "Auto-Detecting Pri Slave... ";
+    int ps_i = 0, ps_j = 28;
+    if (ide1[0]) { while(ide1[ps_i]) ps_log[ps_j++] = ide1[ps_i++]; } 
+    else { const char* nd = "Not Detected"; while(nd[ps_i]) ps_log[ps_j++] = nd[ps_i++]; }
+    ps_log[ps_j] = 0;
+    
+    draw_string(0, log_y, pm_log, 0xFFFFFFFF); log_y += 16;
+    draw_string(0, log_y, ps_log, 0xFFFFFFFF); log_y += 16;
+    draw_string(0, log_y, "Initializing USB Controllers .. Done.", 0xFFFFFFFF); log_y += 32;
+    draw_string(0, log_y, uuid_msg, 0xFFFFFFFF);
     
     draw_string(0, 560, "Press <ESC> for Boot Menu, <F2> for VibeBIOS Setup", 0xFFFFFFFF);
 
