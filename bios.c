@@ -576,6 +576,9 @@ static void ata_identify(u8 drive, char* model) {
     }
     model[p] = 0;
     while(p > 0 && model[p-1] == ' ') { model[p-1] = 0; p--; }
+    
+    // Restore selection to Primary Master so boot sector reading doesn't hang!
+    outb(0x1F6, 0xA0);
 }
 
 // --- ГЛАВНАЯ ФУНКЦИЯ ---
@@ -638,6 +641,11 @@ main_loop:
     char ide1[50];
     ata_identify(0, ide0);
     ata_identify(1, ide1);
+    
+    // Explicitly restore IDE controller to Drive 0 (Master) to prevent booting hangs
+    // due to early returns in ata_identify skipping the restore.
+    outb(0x1F6, 0xA0);
+    for(volatile int j=0; j<1000; j++);
     
     char ram_str[20];
     u32_to_str(get_ram_kb(), ram_str);
